@@ -187,24 +187,41 @@ def start(
 
     try:
         info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        family, socktype, proto, canonname, sockaddr = info[0]
-        with socket.socket(family, socktype, proto) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(sockaddr)
     except socket.gaierror:
         exit_with_error(
             f"Invalid host '{host}'. Please specify a valid hostname or IP address."
         )
-    except socket.error:
+
+    # Try each address returned by getaddrinfo; only fail if none can bind.
+    # On some systems, getaddrinfo returns IPv6 entries before IPv4, and the
+    # IPv6 entry may fail even though the IPv4 one would succeed.
+    bound = False
+    bind_errors: list[str] = []
+    for family, socktype, proto, _canonname, sockaddr in info:
+        try:
+            with socket.socket(family, socktype, proto) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(sockaddr)
+                bound = True
+                break
+        except socket.error as exc:
+            bind_errors.append(f"  {sockaddr}: {exc}")
+
+    if not bound:
         if pid_file.exists():
             exit_with_error(
                 f"A background server process is already running on port {port}. "
                 "Run `prefect server stop` to stop it or specify a different port "
                 "with the `--port` flag."
             )
+        if bind_errors:
+            exit_with_error(
+                f"Unable to bind to {host}:{port}. Errors:\n"
+                + "\n".join(bind_errors)
+            )
         exit_with_error(
-            f"Port {port} is already in use. Please specify a different port with the "
-            "`--port` flag."
+            f"Unable to bind to {host}:{port}. No network addresses were resolved "
+            "for this host. Please verify the hostname or IP address."
         )
 
     if background:
